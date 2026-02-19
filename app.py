@@ -82,7 +82,9 @@ def _sfx_render():
     }})();
     </script>
     """
-    components.html(js, height=0, key=f"_sfx_{nonce}")
+    components.html(js, height=1, key=f"_sfx_{nonce}", scrolling=False)
+    # Limpia para evitar re-render repetido con la misma key
+    st.session_state["_sfx_kind"] = ""
 
 
 # =========================
