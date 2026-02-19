@@ -29,6 +29,7 @@ def _sfx_render():
     # WebAudio (sin archivos externos)
     js = f"""
     <script>
+    // sfx nonce: {nonce}
     (function(){{
       const kind = {kind!r};
       try {{
@@ -82,7 +83,13 @@ def _sfx_render():
     }})();
     </script>
     """
-    components.html(js, height=1, key=f"_sfx_{nonce}", scrolling=False)
+    try:
+        # Evitar TypeError por diferencias de firma entre versiones de Streamlit/components.
+        # Sin key/scrolling para máxima compatibilidad (el JS cambia en cada nonce igualmente).
+        components.html(js, height=1)
+    except Exception:
+        # El sonido es opcional: nunca debe tumbar la app.
+        pass
     # Limpia para evitar re-render repetido con la misma key
     st.session_state["_sfx_kind"] = ""
 
@@ -1842,7 +1849,9 @@ def page_picking():
         # Autofocus en PDA: después de elegir desde la lista, dejar listo el campo de escaneo
         if st.session_state.get("focus_scan", False):
             components.html(
-                "<script>"
+                "<script>
+    // sfx nonce: ${nonce}
+"
                 "setTimeout(function(){"
                 "const el=document.querySelector('input[type=\"text\"]');"
                 "if(el){el.focus(); if(el.select){el.select();}}"
@@ -2326,7 +2335,9 @@ def page_full_upload(inv_map_sku: dict):
 
     if st.session_state.get("scroll_to_scan", False):
         components.html(
-            "<script>const el=document.getElementById('scan_top'); if(el){el.scrollIntoView({behavior:'smooth', block:'start'});}</script>",
+            "<script>
+    // sfx nonce: ${nonce}
+const el=document.getElementById('scan_top'); if(el){el.scrollIntoView({behavior:'smooth', block:'start'});}</script>",
             height=0,
         )
         st.session_state["scroll_to_scan"] = False
