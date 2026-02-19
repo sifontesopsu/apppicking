@@ -10,179 +10,253 @@ import html
 import json
 
 # =========================
-# SFX (sonidos retro) — Sistema A (CLICK + OK + ERR)
-# Nota: En Chrome/Android el audio requiere un "unlock" (un toque del usuario).
+# CONFIG
+# =========================
+DB_NAME = "aurora_ml.db"
+ADMIN_PASSWORD = "aurora123"  # cambia si quieres
+NUM_MESAS = 4
+
+
+# =========================
+# TABLAS POR MÓDULO (para respaldo parcial)
+# =========================
+PICKING_TABLES = [
+    "orders",
+    "order_items",
+    "pickers",
+    "picking_ots",
+    "picking_tasks",
+    "picking_incidences",
+    "cortes_tasks",
+    "ot_orders",
+    "sorting_status",
+]
+FULL_TABLES = [
+    "full_batches","full_batch_items","full_incidences"
+]
+SORTING_TABLES = [
+    # Sorting v1
+    "sorting_manifests","sorting_runs","sorting_run_items","sorting_labels",
+    # Sorting v2 (control + etiquetas + corridas)
+    "s2_manifests","s2_files","s2_page_assign","s2_sales","s2_items","s2_labels","s2_pack_ship"
+]
+
+# Maestro SKU/EAN en la misma carpeta que app.py
+MASTER_FILE = "maestro_sku_ean.xlsx"
+
+
+
+# Maestro de SKUs para CORTES (rollos / corte manual)
+CORTES_FILE = "CORTES.xlsx"
+
+# =========================
+# SFX (Sistema A: CLICK + OK/ERR) — estable para Chrome/Android
 # =========================
 def _sfx_init_state():
     ss = st.session_state
     if "sfx_enabled" not in ss:
         ss["sfx_enabled"] = True
     if "sfx_volume" not in ss:
-        ss["sfx_volume"] = 0.55  # 0.0 - 1.0
+        ss["sfx_volume"] = 0.55  # 0..1
     if "sfx_unlocked" not in ss:
         ss["sfx_unlocked"] = False
-    if "_sfx_nonce" not in ss:
-        ss["_sfx_nonce"] = 0
     if "_sfx_kind" not in ss:
         ss["_sfx_kind"] = ""
-
-def sfx_emit(kind: str):
-    """Solicita reproducir un sonido en el próximo render."""
-    _sfx_init_state()
-    st.session_state["_sfx_kind"] = (kind or "").upper()
-    st.session_state["_sfx_nonce"] = int(st.session_state.get("_sfx_nonce", 0) or 0) + 1
+    if "_sfx_nonce" not in ss:
+        ss["_sfx_nonce"] = 0
 
 def sfx_sidebar():
-    """Panel en sidebar para activar/desactivar sonido y hacer 'unlock'."""
     _sfx_init_state()
-    with st.sidebar.expander("🔊 Sonidos", expanded=False):
-        st.session_state["sfx_enabled"] = st.toggle("Sonido", value=st.session_state["sfx_enabled"])
-        vol = st.slider("Volumen", 0, 100, int(float(st.session_state["sfx_volume"]) * 100))
-        st.session_state["sfx_volume"] = max(0.0, min(1.0, vol / 100.0))
+    with st.sidebar.expander("🔊 Sonidos", expanded=True):
+        st.session_state["sfx_enabled"] = st.toggle("Sonido", value=st.session_state["sfx_enabled"], key="sfx_enabled_toggle")
+        vol_pct = st.slider("Volumen", min_value=0, max_value=100, value=int(st.session_state["sfx_volume"]*100), step=5, key="sfx_volume_slider")
+        st.session_state["sfx_volume"] = max(0.0, min(1.0, vol_pct/100.0))
 
-        if not st.session_state.get("sfx_unlocked", False):
-            st.info("En PDA (Chrome/Android) debes tocar una vez para habilitar audio.")
-            if st.button("Activar sonido", type="primary"):
-                st.session_state["sfx_unlocked"] = True
-                st.rerun()
-        else:
+        if st.button("Activar sonido", disabled=bool(st.session_state.get("sfx_unlocked", False)), use_container_width=True):
+            st.session_state["sfx_unlocked"] = True
+            st.rerun()
+
+        if st.session_state.get("sfx_unlocked", False):
             st.success("Audio habilitado ✅")
+        else:
+            st.info("En Chrome debes tocar “Activar sonido” una vez.")
 
-def _sfx_publish_cfg():
-    """Publica configuración global al navegador (guardada en window.parent para persistir entre iframes)."""
-    _sfx_init_state()
-    cfg = {
-        "enabled": bool(st.session_state.get("sfx_enabled", True)),
-        "unlocked": bool(st.session_state.get("sfx_unlocked", False)),
-        "volume": float(st.session_state.get("sfx_volume", 0.55)),
-    }
-    js = """<script>(function(cfg){
-      try{
-        const w = (window.parent && window.parent !== window) ? window.parent : window;
-        w.__auroraSfxCfg = cfg;
-      }catch(e){}
-    })({cfg});</script>""".replace("{cfg}", json.dumps(cfg))
-    components.html(js, height=0)
 def _sfx_unlock_render():
-    """Crea/resume AudioContext en window.parent cuando el usuario ya presionó 'Activar sonido'."""
     _sfx_init_state()
+    if not st.session_state.get("sfx_enabled", True):
+        return
     if not st.session_state.get("sfx_unlocked", False):
         return
-    js = """
-    <script>
-    (function(){
-      try{
-        const w = (window.parent && window.parent !== window) ? window.parent : window;
-        if(!w.__auroraAudio){
-          const AC = w.AudioContext || w.webkitAudioContext;
-          w.__auroraAudio = new AC();
-        }
-        if(w.__auroraAudio && w.__auroraAudio.state === "suspended"){
-          w.__auroraAudio.resume();
-        }
-      }catch(e){}
-    })();
-    </script>
-    """
-    components.html(js, height=0)
+
+    components.html(
+        '''
+        <script>
+        (function(){
+          try{
+            const root = window.parent || window;
+            const AC = root.AudioContext || root.webkitAudioContext;
+            if(!root.__auroraAudio && AC){
+              root.__auroraAudio = new AC();
+            }
+            if(root.__auroraAudio && root.__auroraAudio.state === "suspended"){
+              root.__auroraAudio.resume();
+            }
+          }catch(e){}
+        })();
+        </script>
+        ''',
+        height=0,
+    )
+
 def _sfx_global_click_hook():
-    """Hook global: cualquier click en un <button> hace un 'click' retro (usa AudioContext del parent)."""
     _sfx_init_state()
-    js = """
-    <script>
-    (function(){
-      try{
-        const w = (window.parent && window.parent !== window) ? window.parent : window;
-        const doc = w.document || document;
-        if(w.__auroraClickHookInstalled) return;
-        w.__auroraClickHookInstalled = true;
+    enabled = bool(st.session_state.get("sfx_enabled", True))
+    unlocked = bool(st.session_state.get("sfx_unlocked", False))
+    vol = float(st.session_state.get("sfx_volume", 0.55))
 
-        function playClick(){
-          try{
-            const cfg = w.__auroraSfxCfg || {enabled:false, unlocked:false, volume:0.5};
-            if(!cfg.enabled || !cfg.unlocked) return;
-            const ctx = w.__auroraAudio;
-            if(!ctx) return;
-            const now = ctx.currentTime;
-            const o = ctx.createOscillator();
-            const g = ctx.createGain();
-            o.type = "square";
-            o.frequency.setValueAtTime(1200, now);
-            g.gain.setValueAtTime(0.0001, now);
-            const peak = Math.max(0.02, (cfg.volume || 0.5) * 0.10);
-            g.gain.exponentialRampToValueAtTime(peak, now + 0.005);
-            g.gain.exponentialRampToValueAtTime(0.0001, now + 0.030);
-            o.connect(g); g.connect(ctx.destination);
-            o.start(now); o.stop(now + 0.040);
-          }catch(e){}
-        }
+    cfg_js = json.dumps({"enabled": enabled, "unlocked": unlocked, "volume": vol})
 
-        doc.addEventListener("click", function(ev){
+    components.html(
+        '''
+        <script>
+        (function(){
           try{
-            const t = ev.target;
-            if(!t) return;
-            const btn = t.closest ? t.closest("button") : null;
-            if(!btn) return;
-            playClick();
+            const root = window.parent || window;
+            root.__auroraSfxCfg = __CFG__;
+            const doc = root.document;
+            if(root.__auroraClickHookInstalled) return;
+            root.__auroraClickHookInstalled = true;
+
+            function playClick(){
+              try{
+                const cfg = root.__auroraSfxCfg || {enabled:false, unlocked:false, volume:0.5};
+                if(!cfg.enabled || !cfg.unlocked) return;
+                const ctx = root.__auroraAudio;
+                if(!ctx) return;
+                const now = ctx.currentTime;
+                const o = ctx.createOscillator();
+                const g = ctx.createGain();
+                o.type = "square";
+                o.frequency.setValueAtTime(1200, now);
+                g.gain.setValueAtTime(0.0001, now);
+                g.gain.exponentialRampToValueAtTime(Math.max(0.02, cfg.volume*0.10), now+0.005);
+                g.gain.exponentialRampToValueAtTime(0.0001, now+0.03);
+                o.connect(g); g.connect(ctx.destination);
+                o.start(now); o.stop(now+0.04);
+              }catch(e){}
+            }
+
+            doc.addEventListener("click", function(ev){
+              const t = ev.target;
+              if(!t) return;
+              const btn = t.closest ? t.closest("button") : null;
+              if(!btn) return;
+              playClick();
+            }, true);
           }catch(e){}
-        }, true);
-      }catch(e){}
-    })();
-    </script>
-    """
-    components.html(js, height=0)
+        })();
+        </script>
+        '''.replace("__CFG__", cfg_js),
+        height=0,
+    )
+
+def sfx_emit(kind: str):
+    _sfx_init_state()
+    if not st.session_state.get("sfx_enabled", True):
+        return
+    if not st.session_state.get("sfx_unlocked", False):
+        return
+    kind = (kind or "").upper().strip()
+    if kind not in ("OK", "ERR"):
+        kind = "ERR"
+    st.session_state["_sfx_kind"] = kind
+    st.session_state["_sfx_nonce"] = int(st.session_state.get("_sfx_nonce", 0)) + 1
+
 def sfx_render_pending():
-    """Reproduce OK/ERR solicitados con sfx_emit()."""
     _sfx_init_state()
-    kind = (st.session_state.get("_sfx_kind") or "").upper()
-    nonce = int(st.session_state.get("_sfx_nonce") or 0)
-
-    # Publicar config al browser siempre
-    _sfx_publish_cfg()
-
-    if not kind or nonce <= 0:
+    if not st.session_state.get("sfx_enabled", True):
+        return
+    if not st.session_state.get("sfx_unlocked", False):
+        return
+    kind = (st.session_state.get("_sfx_kind") or "").upper().strip()
+    if not kind:
         return
 
-    # Consumir evento (para evitar repetición)
     st.session_state["_sfx_kind"] = ""
+    nonce = int(st.session_state.get("_sfx_nonce", 0))
 
-    js = (
-        "<script>/*nonce:" + str(nonce) + "*/"
-        "(function(){"
-        "try{"
-        "const w=(window.parent&&window.parent!==window)?window.parent:window;"
-        "const cfg=w.__auroraSfxCfg||{enabled:false,unlocked:false,volume:0.5};"
-        "if(!cfg.enabled||!cfg.unlocked) return;"
-        "const ctx=w.__auroraAudio; if(!ctx) return;"
-        "const kind=" + json.dumps(kind) + ";"
-        "const now=ctx.currentTime;"
-        "function tone(freq,t0,dur,type,gain){"
-        "  const o=ctx.createOscillator();"
-        "  const g=ctx.createGain();"
-        "  o.type=type||'square';"
-        "  o.frequency.setValueAtTime(freq,t0);"
-        "  g.gain.setValueAtTime(0.0001,t0);"
-        "  const peak=Math.max(0.03,(cfg.volume||0.5)*(gain||0.16));"
-        "  g.gain.exponentialRampToValueAtTime(peak,t0+0.010);"
-        "  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);"
-        "  o.connect(g); g.connect(ctx.destination);"
-        "  o.start(t0); o.stop(t0+dur+0.02);"
-        "}"
-        "function ok(){"
-        "  tone(988, now+0.00, 0.06, 'square', 0.18);"
-        "  tone(1319,now+0.07, 0.06, 'square', 0.16);"
-        "  tone(1760,now+0.14, 0.06, 'square', 0.14);"
-        "}"
-        "function err(){"
-        "  tone(220, now+0.00, 0.16, 'square', 0.14);"
-        "  tone(180, now+0.10, 0.18, 'square', 0.12);"
-        "}"
-        "if(kind==='OK') ok(); else err();"
-        "}catch(e){}"
-        "})();"
-        "</script>"
+    kind_js = json.dumps(kind)
+
+    components.html(
+        '''
+        <script>
+        (function(){
+          try{
+            const root = window.parent || window;
+            const cfg = root.__auroraSfxCfg || {enabled:false, unlocked:false, volume:0.5};
+            if(!cfg.enabled || !cfg.unlocked) return;
+            const ctx = root.__auroraAudio;
+            if(!ctx) return;
+
+            const kind = __KIND__;
+            const vol = Math.max(0.0, Math.min(1.0, cfg.volume || 0.5));
+            const now = ctx.currentTime;
+
+            function tone(freq, t0, dur, type, gain){
+              const o = ctx.createOscillator();
+              const g = ctx.createGain();
+              o.type = type || "square";
+              o.frequency.setValueAtTime(freq, t0);
+              g.gain.setValueAtTime(0.0001, t0);
+              g.gain.exponentialRampToValueAtTime(Math.max(0.02, vol*(gain||0.12)), t0+0.01);
+              g.gain.exponentialRampToValueAtTime(0.0001, t0+dur);
+              o.connect(g); g.connect(ctx.destination);
+              o.start(t0); o.stop(t0+dur+0.02);
+            }
+
+            function ok(){
+              tone(988,  now+0.00, 0.06, "square", 0.14);
+              tone(1319, now+0.07, 0.06, "square", 0.13);
+              tone(1760, now+0.14, 0.06, "square", 0.12);
+            }
+            function err(){
+              tone(220, now+0.00, 0.16, "square", 0.12);
+              tone(180, now+0.10, 0.18, "square", 0.10);
+            }
+
+            if(kind === "OK") ok();
+            else err();
+          }catch(e){}
+        })();
+        </script>
+        <!-- nonce:__NONCE__ -->
+        '''.replace("__KIND__", kind_js).replace("__NONCE__", str(nonce)),
+        height=0,
     )
-    components.html(js, height=0)
+
+# =========================
+# TIMEZONE CHILE
+# =========================
+try:
+    from zoneinfo import ZoneInfo  # py3.9+
+    CL_TZ = ZoneInfo("America/Santiago")
+    UTC_TZ = ZoneInfo("UTC")
+except Exception:
+    CL_TZ = None
+    UTC_TZ = None
+
+
+# PDF manifiestos
+try:
+    import pdfplumber
+    HAS_PDF_LIB = True
+except ImportError:
+    HAS_PDF_LIB = False
+
+
+# =========================
+# UTILIDADES
+# =========================
 def now_iso():
     """ISO timestamp in Chile time (America/Santiago) with UTC offset."""
     if CL_TZ is not None:
@@ -1895,20 +1969,21 @@ def page_picking():
                 s["scan_msg"] = "No se pudo leer el código."
                 s["confirmed"] = False
                 s["confirm_mode"] = None
-                sfx_emit("ERR")
             elif sku_detected != sku_expected:
                 s["scan_status"] = "bad"
                 s["scan_msg"] = f"Leído: {sku_detected}"
                 s["confirmed"] = False
                 s["confirm_mode"] = None
-                sfx_emit("ERR")
             else:
                 s["scan_status"] = "ok"
                 s["scan_msg"] = "Producto correcto."
                 s["confirmed"] = True
                 s["confirm_mode"] = "SCAN"
                 s["scan_value"] = scan
+            if s.get("scan_status") == "ok":
                 sfx_emit("OK")
+            elif s.get("scan_status") == "bad":
+                sfx_emit("ERR")
             st.rerun()
 
     with col3:
@@ -1944,7 +2019,6 @@ def page_picking():
             s["show_manual_confirm"] = False
             s["scan_status"] = "ok"
             s["scan_msg"] = "Confirmado manual."
-            sfx_emit("OK")
             st.rerun()
 
     qty_label = "Cantidad"
@@ -1969,7 +2043,6 @@ def page_picking():
 
             if q > int(qty_total):
                 st.error(f"La cantidad ({q}) supera solicitado ({qty_total}).")
-                sfx_emit("ERR")
                 s["needs_decision"] = False
 
             elif q == int(qty_total):
@@ -1990,8 +2063,8 @@ def page_picking():
                 """, (q, now_iso(), s["confirm_mode"], task_id))
                 conn.commit()
                 state.pop(str(task_id), None)
-                sfx_emit("OK")
                 st.success("OK. Siguiente…")
+                sfx_emit("OK")
                 st.rerun()
             else:
                 missing = int(qty_total) - q
@@ -4967,6 +5040,12 @@ def page_pkg_counter():
 def main():
 
     st.set_page_config(page_title="Aurora ML – WMS", layout="wide")
+
+    # 🔊 Sonidos globales (Sistema A)
+    sfx_sidebar()
+    _sfx_unlock_render()
+    _sfx_global_click_hook()
+    sfx_render_pending()
     init_db()
 
     # Auto-carga maestro desde repo (sirve para ambos modos)
@@ -4979,12 +5058,6 @@ def main():
 
     # Sidebar común
     st.sidebar.title("Ferretería Aurora – WMS")
-
-    # 🔊 Sonidos (CLICK + OK/ERR)
-    sfx_sidebar()
-    _sfx_unlock_render()
-    _sfx_global_click_hook()
-    sfx_render_pending()
 
     # Botón para volver al lobby
     if st.sidebar.button("⬅️ Cambiar modo"):
