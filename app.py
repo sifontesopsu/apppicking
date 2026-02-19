@@ -49,18 +49,22 @@ def sfx_sidebar():
             st.success("Audio habilitado ✅")
 
 def _sfx_publish_cfg():
-    """Publica configuración global al navegador (sin f-strings para evitar errores con llaves JS)."""
+    """Publica configuración global al navegador (guardada en window.parent para persistir entre iframes)."""
     _sfx_init_state()
     cfg = {
         "enabled": bool(st.session_state.get("sfx_enabled", True)),
         "unlocked": bool(st.session_state.get("sfx_unlocked", False)),
         "volume": float(st.session_state.get("sfx_volume", 0.55)),
     }
-    html_cfg = "<script>window.__auroraSfxCfg=" + json.dumps(cfg) + ";</script>"
-    components.html(html_cfg, height=0)
-
+    js = """<script>(function(cfg){
+      try{
+        const w = (window.parent && window.parent !== window) ? window.parent : window;
+        w.__auroraSfxCfg = cfg;
+      }catch(e){}
+    })({cfg});</script>""".replace("{cfg}", json.dumps(cfg))
+    components.html(js, height=0)
 def _sfx_unlock_render():
-    """Crea/resume AudioContext cuando el usuario ya presionó 'Activar sonido'."""
+    """Crea/resume AudioContext en window.parent cuando el usuario ya presionó 'Activar sonido'."""
     _sfx_init_state()
     if not st.session_state.get("sfx_unlocked", False):
         return
@@ -68,48 +72,46 @@ def _sfx_unlock_render():
     <script>
     (function(){
       try{
-        if(!window.__auroraAudio){
-          const AC = window.AudioContext || window.webkitAudioContext;
-          window.__auroraAudio = new AC();
+        const w = (window.parent && window.parent !== window) ? window.parent : window;
+        if(!w.__auroraAudio){
+          const AC = w.AudioContext || w.webkitAudioContext;
+          w.__auroraAudio = new AC();
         }
-        if(window.__auroraAudio && window.__auroraAudio.state === "suspended"){
-          window.__auroraAudio.resume();
+        if(w.__auroraAudio && w.__auroraAudio.state === "suspended"){
+          w.__auroraAudio.resume();
         }
       }catch(e){}
     })();
     </script>
     """
     components.html(js, height=0)
-
 def _sfx_global_click_hook():
-    """Hook global: cualquier click en un <button> hace un 'click' retro."""
+    """Hook global: cualquier click en un <button> hace un 'click' retro (usa AudioContext del parent)."""
     _sfx_init_state()
     js = """
     <script>
     (function(){
       try{
-        const doc = window.parent && window.parent.document ? window.parent.document : document;
-        if(window.__auroraClickHookInstalled) return;
-        window.__auroraClickHookInstalled = true;
+        const w = (window.parent && window.parent !== window) ? window.parent : window;
+        const doc = w.document || document;
+        if(w.__auroraClickHookInstalled) return;
+        w.__auroraClickHookInstalled = true;
 
         function playClick(){
           try{
-            const cfg = window.__auroraSfxCfg || {enabled:false, unlocked:false, volume:0.5};
+            const cfg = w.__auroraSfxCfg || {enabled:false, unlocked:false, volume:0.5};
             if(!cfg.enabled || !cfg.unlocked) return;
-            const ctx = window.__auroraAudio;
+            const ctx = w.__auroraAudio;
             if(!ctx) return;
             const now = ctx.currentTime;
-
             const o = ctx.createOscillator();
             const g = ctx.createGain();
             o.type = "square";
             o.frequency.setValueAtTime(1200, now);
-
             g.gain.setValueAtTime(0.0001, now);
             const peak = Math.max(0.02, (cfg.volume || 0.5) * 0.10);
             g.gain.exponentialRampToValueAtTime(peak, now + 0.005);
             g.gain.exponentialRampToValueAtTime(0.0001, now + 0.030);
-
             o.connect(g); g.connect(ctx.destination);
             o.start(now); o.stop(now + 0.040);
           }catch(e){}
@@ -129,14 +131,13 @@ def _sfx_global_click_hook():
     </script>
     """
     components.html(js, height=0)
-
 def sfx_render_pending():
     """Reproduce OK/ERR solicitados con sfx_emit()."""
     _sfx_init_state()
     kind = (st.session_state.get("_sfx_kind") or "").upper()
     nonce = int(st.session_state.get("_sfx_nonce") or 0)
 
-    # Publicar config al browser siempre (para click hook y para sonidos)
+    # Publicar config al browser siempre
     _sfx_publish_cfg()
 
     if not kind or nonce <= 0:
@@ -145,14 +146,14 @@ def sfx_render_pending():
     # Consumir evento (para evitar repetición)
     st.session_state["_sfx_kind"] = ""
 
-    # Script sin f-string; inyectamos 'kind' como JSON string
     js = (
         "<script>/*nonce:" + str(nonce) + "*/"
         "(function(){"
         "try{"
-        "const cfg=window.__auroraSfxCfg||{enabled:false,unlocked:false,volume:0.5};"
+        "const w=(window.parent&&window.parent!==window)?window.parent:window;"
+        "const cfg=w.__auroraSfxCfg||{enabled:false,unlocked:false,volume:0.5};"
         "if(!cfg.enabled||!cfg.unlocked) return;"
-        "const ctx=window.__auroraAudio; if(!ctx) return;"
+        "const ctx=w.__auroraAudio; if(!ctx) return;"
         "const kind=" + json.dumps(kind) + ";"
         "const now=ctx.currentTime;"
         "function tone(freq,t0,dur,type,gain){"
@@ -182,71 +183,6 @@ def sfx_render_pending():
         "</script>"
     )
     components.html(js, height=0)
-
-
-
-# =========================
-# CONFIG
-# =========================
-DB_NAME = "aurora_ml.db"
-ADMIN_PASSWORD = "aurora123"  # cambia si quieres
-NUM_MESAS = 4
-
-
-# =========================
-# TABLAS POR MÓDULO (para respaldo parcial)
-# =========================
-PICKING_TABLES = [
-    "orders",
-    "order_items",
-    "pickers",
-    "picking_ots",
-    "picking_tasks",
-    "picking_incidences",
-    "cortes_tasks",
-    "ot_orders",
-    "sorting_status",
-]
-FULL_TABLES = [
-    "full_batches","full_batch_items","full_incidences"
-]
-SORTING_TABLES = [
-    # Sorting v1
-    "sorting_manifests","sorting_runs","sorting_run_items","sorting_labels",
-    # Sorting v2 (control + etiquetas + corridas)
-    "s2_manifests","s2_files","s2_page_assign","s2_sales","s2_items","s2_labels","s2_pack_ship"
-]
-
-# Maestro SKU/EAN en la misma carpeta que app.py
-MASTER_FILE = "maestro_sku_ean.xlsx"
-
-
-
-# Maestro de SKUs para CORTES (rollos / corte manual)
-CORTES_FILE = "CORTES.xlsx"
-# =========================
-# TIMEZONE CHILE
-# =========================
-try:
-    from zoneinfo import ZoneInfo  # py3.9+
-    CL_TZ = ZoneInfo("America/Santiago")
-    UTC_TZ = ZoneInfo("UTC")
-except Exception:
-    CL_TZ = None
-    UTC_TZ = None
-
-
-# PDF manifiestos
-try:
-    import pdfplumber
-    HAS_PDF_LIB = True
-except ImportError:
-    HAS_PDF_LIB = False
-
-
-# =========================
-# UTILIDADES
-# =========================
 def now_iso():
     """ISO timestamp in Chile time (America/Santiago) with UTC offset."""
     if CL_TZ is not None:
