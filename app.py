@@ -7,188 +7,183 @@ from datetime import datetime
 import re
 import hashlib
 import html
+import json
 
 # =========================
-# SFX (sonidos retro para PDA/Chrome)
+# SFX (sonidos retro) — Sistema A (CLICK + OK + ERR)
+# Nota: En Chrome/Android el audio requiere un "unlock" (un toque del usuario).
 # =========================
 def _sfx_init_state():
     ss = st.session_state
-    ss.setdefault("sfx_enabled", True)
-    ss.setdefault("sfx_volume", 0.55)   # 0.0 - 1.0
-    ss.setdefault("sfx_unlocked", False)
-    ss.setdefault("_sfx_kind", "")
-    ss.setdefault("_sfx_nonce", 0)
+    if "sfx_enabled" not in ss:
+        ss["sfx_enabled"] = True
+    if "sfx_volume" not in ss:
+        ss["sfx_volume"] = 0.55  # 0.0 - 1.0
+    if "sfx_unlocked" not in ss:
+        ss["sfx_unlocked"] = False
+    if "_sfx_nonce" not in ss:
+        ss["_sfx_nonce"] = 0
+    if "_sfx_kind" not in ss:
+        ss["_sfx_kind"] = ""
 
 def sfx_emit(kind: str):
-    """Dispara un sonido en el próximo rerun. kind: OK/ERR/WARN/NEXT/DONE/CLICK"""
+    """Solicita reproducir un sonido en el próximo render."""
     _sfx_init_state()
     st.session_state["_sfx_kind"] = (kind or "").upper()
-    st.session_state["_sfx_nonce"] = int(st.session_state.get("_sfx_nonce", 0)) + 1
+    st.session_state["_sfx_nonce"] = int(st.session_state.get("_sfx_nonce", 0) or 0) + 1
 
 def sfx_sidebar():
-    """Panel en sidebar + botón de desbloqueo (obligatorio en Chrome/Android)."""
+    """Panel en sidebar para activar/desactivar sonido y hacer 'unlock'."""
     _sfx_init_state()
     with st.sidebar.expander("🔊 Sonidos", expanded=False):
         st.session_state["sfx_enabled"] = st.toggle("Sonido", value=st.session_state["sfx_enabled"])
-        vol_pct = int(round(float(st.session_state.get("sfx_volume", 0.55)) * 100))
-        vol_pct = st.slider("Volumen", 0, 100, vol_pct, 5)
-        st.session_state["sfx_volume"] = float(vol_pct) / 100.0
+        vol = st.slider("Volumen", 0, 100, int(float(st.session_state["sfx_volume"]) * 100))
+        st.session_state["sfx_volume"] = max(0.0, min(1.0, vol / 100.0))
 
-        if st.button("Activar sonido", disabled=bool(st.session_state.get("sfx_unlocked"))):
-            # El click real del usuario permite 'resume' del AudioContext
-            st.session_state["sfx_unlocked"] = True
-            sfx_emit("CLICK")
-            st.rerun()
+        if not st.session_state.get("sfx_unlocked", False):
+            st.info("En PDA (Chrome/Android) debes tocar una vez para habilitar audio.")
+            if st.button("Activar sonido", type="primary"):
+                st.session_state["sfx_unlocked"] = True
+                st.rerun()
+        else:
+            st.success("Audio habilitado ✅")
+
+def _sfx_publish_cfg():
+    """Publica configuración global al navegador (sin f-strings para evitar errores con llaves JS)."""
+    _sfx_init_state()
+    cfg = {
+        "enabled": bool(st.session_state.get("sfx_enabled", True)),
+        "unlocked": bool(st.session_state.get("sfx_unlocked", False)),
+        "volume": float(st.session_state.get("sfx_volume", 0.55)),
+    }
+    html_cfg = "<script>window.__auroraSfxCfg=" + json.dumps(cfg) + ";</script>"
+    components.html(html_cfg, height=0)
 
 def _sfx_unlock_render():
-    """Crea/resume AudioContext después de activar. Sin UI."""
+    """Crea/resume AudioContext cuando el usuario ya presionó 'Activar sonido'."""
     _sfx_init_state()
     if not st.session_state.get("sfx_unlocked", False):
         return
-    components.html(
-        """
-        <script>
-        (function(){
-          try{
-            if(!window.__auroraAudio){
-              const AC = window.AudioContext || window.webkitAudioContext;
-              window.__auroraAudio = new AC();
-            }
-            if(window.__auroraAudio.state === "suspended"){
-              window.__auroraAudio.resume();
-            }
-          }catch(e){}
-        })();
-        </script>
-        """,
-        height=0,
-    )
+    js = """
+    <script>
+    (function(){
+      try{
+        if(!window.__auroraAudio){
+          const AC = window.AudioContext || window.webkitAudioContext;
+          window.__auroraAudio = new AC();
+        }
+        if(window.__auroraAudio && window.__auroraAudio.state === "suspended"){
+          window.__auroraAudio.resume();
+        }
+      }catch(e){}
+    })();
+    </script>
+    """
+    components.html(js, height=0)
 
 def _sfx_global_click_hook():
-    """Hook global: cualquier click en botón dispara CLICK (si está habilitado y desbloqueado)."""
+    """Hook global: cualquier click en un <button> hace un 'click' retro."""
     _sfx_init_state()
-    enabled = "true" if st.session_state.get("sfx_enabled", True) else "false"
-    unlocked = "true" if st.session_state.get("sfx_unlocked", False) else "false"
-    vol = float(st.session_state.get("sfx_volume", 0.55))
+    js = """
+    <script>
+    (function(){
+      try{
+        const doc = window.parent && window.parent.document ? window.parent.document : document;
+        if(window.__auroraClickHookInstalled) return;
+        window.__auroraClickHookInstalled = true;
 
-    components.html(
-        f"""
-        <script>
-        (function(){
+        function playClick(){
           try{
-            window.__auroraSfxCfg = {{enabled: {enabled}, unlocked: {unlocked}, volume: {vol}}};
-            const doc = window.parent?.document || document;
-            if(window.__auroraClickHookInstalled) return;
-            window.__auroraClickHookInstalled = true;
-
-            function playClick(){
-              try{
-                const cfg = window.__auroraSfxCfg || {{enabled:false, unlocked:false, volume:0.5}};
-                if(!cfg.enabled || !cfg.unlocked) return;
-                const ctx = window.__auroraAudio;
-                if(!ctx) return;
-                const now = ctx.currentTime;
-                const o = ctx.createOscillator();
-                const g = ctx.createGain();
-                o.type = "square";
-                o.frequency.setValueAtTime(1200, now);
-                g.gain.setValueAtTime(0.0001, now);
-                g.gain.exponentialRampToValueAtTime(Math.max(0.02, cfg.volume*0.10), now+0.005);
-                g.gain.exponentialRampToValueAtTime(0.0001, now+0.03);
-                o.connect(g); g.connect(ctx.destination);
-                o.start(now); o.stop(now+0.04);
-              }catch(e){}
-            }
-
-            doc.addEventListener("click", function(ev){
-              const t = ev.target;
-              if(!t) return;
-              const btn = t.closest ? t.closest("button") : null;
-              if(!btn) return;
-              playClick();
-            }, true);
-          }catch(e){}
-        })();
-        </script>
-        """,
-        height=0,
-    )
-
-def sfx_render_pending():
-    """Reproduce el sonido pendiente (OK/ERR/WARN/NEXT/DONE)."""
-    _sfx_init_state()
-    if not st.session_state.get("sfx_enabled", True):
-        return
-    if not st.session_state.get("sfx_unlocked", False):
-        return
-
-    kind = (st.session_state.get("_sfx_kind") or "").upper()
-    nonce = int(st.session_state.get("_sfx_nonce", 0) or 0)
-    if not kind or nonce <= 0:
-        return
-
-    # Limpia para no repetir en el siguiente rerun
-    st.session_state["_sfx_kind"] = ""
-
-    vol = float(st.session_state.get("sfx_volume", 0.55))
-
-    components.html(
-        f"""
-        <script>
-        /*nonce:{nonce}*/
-        (function(){{
-          const kind = {kind!r};
-          const volume = {vol};
-          try{{
+            const cfg = window.__auroraSfxCfg || {enabled:false, unlocked:false, volume:0.5};
+            if(!cfg.enabled || !cfg.unlocked) return;
             const ctx = window.__auroraAudio;
             if(!ctx) return;
             const now = ctx.currentTime;
 
-            function tone(freq, t0, dur, type, gain){{
-              const o = ctx.createOscillator();
-              const g = ctx.createGain();
-              o.type = type || "square";
-              o.frequency.setValueAtTime(freq, t0);
-              g.gain.setValueAtTime(0.0001, t0);
-              g.gain.exponentialRampToValueAtTime(Math.max(0.02, (gain||0.12) * volume), t0 + 0.01);
-              g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-              o.connect(g); g.connect(ctx.destination);
-              o.start(t0); o.stop(t0 + dur + 0.02);
-            }}
+            const o = ctx.createOscillator();
+            const g = ctx.createGain();
+            o.type = "square";
+            o.frequency.setValueAtTime(1200, now);
 
-            function ok(){{
-              tone(988,  now+0.00, 0.06, "square",   0.18);
-              tone(1319, now+0.07, 0.06, "square",   0.16);
-              tone(1760, now+0.14, 0.06, "square",   0.14);
-            }}
-            function err(){{
-              tone(220,  now+0.00, 0.16, "square",   0.14);
-              tone(180,  now+0.08, 0.18, "square",   0.12);
-            }}
-            function next(){{
-              tone(880,  now+0.00, 0.04, "triangle", 0.12);
-            }}
-            function warn(){{
-              tone(440,  now+0.00, 0.07, "sawtooth", 0.12);
-              tone(440,  now+0.10, 0.07, "sawtooth", 0.12);
-            }}
-            function done(){{
-              tone(659,  now+0.00, 0.07, "square",   0.16);
-              tone(784,  now+0.08, 0.07, "square",   0.16);
-              tone(988,  now+0.16, 0.10, "square",   0.16);
-            }}
+            g.gain.setValueAtTime(0.0001, now);
+            const peak = Math.max(0.02, (cfg.volume || 0.5) * 0.10);
+            g.gain.exponentialRampToValueAtTime(peak, now + 0.005);
+            g.gain.exponentialRampToValueAtTime(0.0001, now + 0.030);
 
-            if(kind==="OK") ok();
-            else if(kind==="NEXT") next();
-            else if(kind==="WARN") warn();
-            else if(kind==="DONE") done();
-            else err();
-          }}catch(e){{}}
-        }})();
-        </script>
-        """,
-        height=0,
+            o.connect(g); g.connect(ctx.destination);
+            o.start(now); o.stop(now + 0.040);
+          }catch(e){}
+        }
+
+        doc.addEventListener("click", function(ev){
+          try{
+            const t = ev.target;
+            if(!t) return;
+            const btn = t.closest ? t.closest("button") : null;
+            if(!btn) return;
+            playClick();
+          }catch(e){}
+        }, true);
+      }catch(e){}
+    })();
+    </script>
+    """
+    components.html(js, height=0)
+
+def sfx_render_pending():
+    """Reproduce OK/ERR solicitados con sfx_emit()."""
+    _sfx_init_state()
+    kind = (st.session_state.get("_sfx_kind") or "").upper()
+    nonce = int(st.session_state.get("_sfx_nonce") or 0)
+
+    # Publicar config al browser siempre (para click hook y para sonidos)
+    _sfx_publish_cfg()
+
+    if not kind or nonce <= 0:
+        return
+
+    # Consumir evento (para evitar repetición)
+    st.session_state["_sfx_kind"] = ""
+
+    # Script sin f-string; inyectamos 'kind' como JSON string
+    js = (
+        "<script>/*nonce:" + str(nonce) + "*/"
+        "(function(){"
+        "try{"
+        "const cfg=window.__auroraSfxCfg||{enabled:false,unlocked:false,volume:0.5};"
+        "if(!cfg.enabled||!cfg.unlocked) return;"
+        "const ctx=window.__auroraAudio; if(!ctx) return;"
+        "const kind=" + json.dumps(kind) + ";"
+        "const now=ctx.currentTime;"
+        "function tone(freq,t0,dur,type,gain){"
+        "  const o=ctx.createOscillator();"
+        "  const g=ctx.createGain();"
+        "  o.type=type||'square';"
+        "  o.frequency.setValueAtTime(freq,t0);"
+        "  g.gain.setValueAtTime(0.0001,t0);"
+        "  const peak=Math.max(0.03,(cfg.volume||0.5)*(gain||0.16));"
+        "  g.gain.exponentialRampToValueAtTime(peak,t0+0.010);"
+        "  g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);"
+        "  o.connect(g); g.connect(ctx.destination);"
+        "  o.start(t0); o.stop(t0+dur+0.02);"
+        "}"
+        "function ok(){"
+        "  tone(988, now+0.00, 0.06, 'square', 0.18);"
+        "  tone(1319,now+0.07, 0.06, 'square', 0.16);"
+        "  tone(1760,now+0.14, 0.06, 'square', 0.14);"
+        "}"
+        "function err(){"
+        "  tone(220, now+0.00, 0.16, 'square', 0.14);"
+        "  tone(180, now+0.10, 0.18, 'square', 0.12);"
+        "}"
+        "if(kind==='OK') ok(); else err();"
+        "}catch(e){}"
+        "})();"
+        "</script>"
     )
+    components.html(js, height=0)
+
+
 
 # =========================
 # CONFIG
@@ -447,8 +442,6 @@ def _restore_tables_from_db_bytes(db_bytes: bytes, tables: list[str]) -> tuple[b
         conn_dst.commit()
         return True, None
     except Exception as e:
-        try: sfx_emit("ERR")
-        except Exception: pass
         try:
             conn_dst.rollback()
         except Exception:
@@ -1867,8 +1860,6 @@ def page_picking():
     if current is None:
         st.success("No quedan SKUs pendientes.")
         if st.button("Cerrar OT"):
-            try: sfx_emit("DONE")
-            except Exception: pass
             c.execute("UPDATE picking_ots SET status='PICKED', closed_at=? WHERE id=?", (now_iso(), ot_id))
             conn.commit()
             st.success("OT cerrada.")
@@ -1966,38 +1957,31 @@ def page_picking():
             if not sku_detected:
                 s["scan_status"] = "bad"
                 s["scan_msg"] = "No se pudo leer el código."
-                try: sfx_emit("ERR")
-                except Exception: pass
                 s["confirmed"] = False
                 s["confirm_mode"] = None
+                sfx_emit("ERR")
             elif sku_detected != sku_expected:
                 s["scan_status"] = "bad"
                 s["scan_msg"] = f"Leído: {sku_detected}"
-                try: sfx_emit("ERR")
-                except Exception: pass
                 s["confirmed"] = False
                 s["confirm_mode"] = None
+                sfx_emit("ERR")
             else:
                 s["scan_status"] = "ok"
                 s["scan_msg"] = "Producto correcto."
-                try: sfx_emit("OK")
-                except Exception: pass
                 s["confirmed"] = True
                 s["confirm_mode"] = "SCAN"
                 s["scan_value"] = scan
+                sfx_emit("OK")
             st.rerun()
 
     with col3:
         if st.button("Sin EAN"):
             s["show_manual_confirm"] = True
-            try: sfx_emit("WARN")
-            except Exception: pass
             st.rerun()
 
     with col4:
         if st.button("Siguiente"):
-            try: sfx_emit("NEXT")
-            except Exception: pass
             # Siempre manda este SKU al final de la fila (rotación circular).
             # Implementación: defer_rank = (máximo defer_rank en esta OT) + 1
             try:
@@ -2019,13 +2003,12 @@ def page_picking():
         st.info("Confirmación manual")
         st.write(f"✅ {producto_show}")
         if st.button("Confirmar", key=f"confirm_manual_{task_id}"):
-            try: sfx_emit("OK")
-            except Exception: pass
             s["confirmed"] = True
             s["confirm_mode"] = "MANUAL_NO_EAN"
             s["show_manual_confirm"] = False
             s["scan_status"] = "ok"
             s["scan_msg"] = "Confirmado manual."
+            sfx_emit("OK")
             st.rerun()
 
     qty_label = "Cantidad"
@@ -2042,8 +2025,7 @@ def page_picking():
             q = int(str(qty_in).strip())
         except Exception:
             st.error("Ingresa un número válido.")
-            try: sfx_emit("ERR")
-            except Exception: pass
+            sfx_emit("ERR")
             q = None
 
         if q is not None:
@@ -2051,8 +2033,7 @@ def page_picking():
 
             if q > int(qty_total):
                 st.error(f"La cantidad ({q}) supera solicitado ({qty_total}).")
-                try: sfx_emit("ERR")
-                except Exception: pass
+                sfx_emit("ERR")
                 s["needs_decision"] = False
 
             elif q == int(qty_total):
@@ -2073,8 +2054,7 @@ def page_picking():
                 """, (q, now_iso(), s["confirm_mode"], task_id))
                 conn.commit()
                 state.pop(str(task_id), None)
-                try: sfx_emit("OK")
-                except Exception: pass
+                sfx_emit("OK")
                 st.success("OK. Siguiente…")
                 st.rerun()
             else:
@@ -2082,8 +2062,6 @@ def page_picking():
                 s["needs_decision"] = True
                 s["missing"] = missing
                 st.warning(f"Faltan {missing}. Debes decidir (incidencias o reintentar).")
-                try: sfx_emit("WARN")
-                except Exception: pass
 
     if s["needs_decision"]:
         st.error(f"DECISIÓN: faltan {s['missing']} unidades.")
@@ -2124,8 +2102,6 @@ def page_picking():
                     st.session_state["pick_inc_pending"] = None
                     state.pop(str(task_id), None)
                     st.success("Enviado a incidencias. Siguiente…")
-                    try: sfx_emit("WARN")
-                    except Exception: pass
                     st.rerun()
 
                 if c2.button("Cancelar", key=f"pick_inc_cancel_{task_id}"):
@@ -2602,8 +2578,6 @@ def page_full_supervisor(inv_map_sku: dict):
             if not sku:
                 sst["msg_kind"] = "bad"
                 sst["msg"] = "No se pudo leer el código."
-                try: sfx_emit("ERR")
-                except Exception: pass
                 st.rerun()
 
             conn = get_conn()
@@ -2619,14 +2593,10 @@ def page_full_supervisor(inv_map_sku: dict):
             if not ok:
                 sst["msg_kind"] = "bad"
                 sst["msg"] = f"{sku} no pertenece a este lote."
-                try: sfx_emit("ERR")
-                except Exception: pass
                 sst["sku_current"] = ""
             else:
                 sst["msg_kind"] = "ok"
                 sst["msg"] = "SKU encontrado."
-                try: sfx_emit("OK")
-                except Exception: pass
             st.rerun()
 
     with colB:
@@ -4401,8 +4371,6 @@ def page_sorting_camarero(inv_map_sku, barcode_to_sku):
     # Estado de confirmación por producto
     if "s2_pending_sku" not in st.session_state:
         st.session_state["s2_pending_sku"] = None
-                    try: sfx_emit("OK")
-                    except Exception: pass
         st.session_state["s2_pending_qty"] = 0
         st.session_state["s2_pending_title"] = ""
 
@@ -4471,8 +4439,6 @@ def page_sorting_camarero(inv_map_sku, barcode_to_sku):
                 ok, msg = _s2_apply_pick(mid, sale_id, str(pending_sku), int(pending_qty))
                 if not ok:
                     st.error(msg or "No se pudo aplicar.")
-                    try: sfx_emit("ERR")
-                    except Exception: pass
                 else:
                     st.session_state["s2_pending_sku"] = None
                     st.session_state["s2_pending_qty"] = 0
@@ -4897,8 +4863,6 @@ def _pkg_register_scan(run_id: int, label_key: str, raw: str):
             (int(run_id), str(label_key), str(raw or ""), now_iso()),
         )
         conn.commit()
-        try: sfx_emit("OK")
-        except Exception: pass
         return True, None
     except Exception as e:
         # SQLite lanza error por UNIQUE(run_id,label_key) => repetido
@@ -5069,16 +5033,6 @@ def main():
     st.set_page_config(page_title="Aurora ML – WMS", layout="wide")
     init_db()
 
-    # 🔊 Sonidos (PDA/Chrome): panel + desbloqueo + hook global + reproducción
-    try:
-        sfx_sidebar()
-        _sfx_unlock_render()
-        _sfx_global_click_hook()
-        sfx_render_pending()
-    except Exception:
-        # Si algo falla con el audio, no debe botar la app
-        pass
-
     # Auto-carga maestro desde repo (sirve para ambos modos)
     inv_map_sku, barcode_to_sku, conflicts = master_bootstrap(MASTER_FILE)
 
@@ -5089,6 +5043,12 @@ def main():
 
     # Sidebar común
     st.sidebar.title("Ferretería Aurora – WMS")
+
+    # 🔊 Sonidos (CLICK + OK/ERR)
+    sfx_sidebar()
+    _sfx_unlock_render()
+    _sfx_global_click_hook()
+    sfx_render_pending()
 
     # Botón para volver al lobby
     if st.sidebar.button("⬅️ Cambiar modo"):
