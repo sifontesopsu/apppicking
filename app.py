@@ -51,6 +51,7 @@ def _sfx_unlock_render():
     components.html(
         """
         <script>
+        /*nonce:{nonce}*/
         (function(){
           try{
             const AC = window.AudioContext || window.webkitAudioContext;
@@ -78,6 +79,7 @@ def _sfx_global_click_hook():
     components.html(
         f"""
         <script>
+        /*nonce:{nonce}*/
         (function(){{
           try{{
             window.__auroraSfxCfg = {{enabled: {enabled}, unlocked: {unlocked}, volume: {vol}}};
@@ -139,6 +141,7 @@ def sfx_render_pending():
     components.html(
         f"""
         <script>
+        /*nonce:{nonce}*/
         (function(){{
           const kind = {kind!r};
           try{{
@@ -186,7 +189,6 @@ def sfx_render_pending():
         </script>
         """,
         height=0,
-        key=f"_sfx_play_{nonce}",
     )
 
 # =========================
